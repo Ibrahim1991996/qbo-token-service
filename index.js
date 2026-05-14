@@ -13,11 +13,16 @@ app.get('/token', async (req, res) => {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${credentials}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
       },
-      body: `grant_type=refresh_token&refresh_token=${refreshToken}`
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+      }).toString()
     });
     const data = await response.json();
+    console.log('QBO response:', JSON.stringify(data));
     if (data.access_token) {
       refreshToken = data.refresh_token;
       res.json({ access_token: data.access_token });
