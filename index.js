@@ -7,6 +7,30 @@ const CLIENT_ID = process.env.QBO_CLIENT_ID;
 const CLIENT_SECRET = process.env.QBO_CLIENT_SECRET;
 const REALM_ID = process.env.QBO_REALM_ID;
 
+async function updateRenderToken(newToken) {
+  try {
+    await fetch(`https://api.render.com/v1/services/${process.env.RENDER_SERVICE_ID}/env-vars`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${process.env.RENDER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify([
+        { key: 'QBO_CLIENT_ID', value: CLIENT_ID },
+        { key: 'QBO_CLIENT_SECRET', value: CLIENT_SECRET },
+        { key: 'QBO_REFRESH_TOKEN', value: newToken },
+        { key: 'QBO_REALM_ID', value: REALM_ID },
+        { key: 'RENDER_API_KEY', value: process.env.RENDER_API_KEY },
+        { key: 'RENDER_SERVICE_ID', value: process.env.RENDER_SERVICE_ID }
+      ])
+    });
+    refreshToken = newToken;
+    console.log('Refresh token mis à jour:', newToken);
+  } catch (err) {
+    console.error('Erreur mise à jour Render:', err);
+  }
+}
+
 async function getAccessToken() {
   const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
   const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
@@ -23,7 +47,7 @@ async function getAccessToken() {
   });
   const data = await response.json();
   if (data.access_token) {
-    refreshToken = data.refresh_token;
+    await updateRenderToken(data.refresh_token);
     return data.access_token;
   }
   throw new Error(JSON.stringify(data));
@@ -41,30 +65,23 @@ app.get('/token', async (req, res) => {
 app.get('/data', async (req, res) => {
   try {
     const accessToken = await getAccessToken();
-    
     const today = new Date();
     const month = today.getMonth() + 1;
     const year = today.getFullYear();
     const startFY = month < 4 ? year - 1 : year;
-    
     const allRows = [];
-    
     for (let fy = 2026; fy <= startFY; fy++) {
       const startDate = `${fy}-04-01`;
       const endDate = `${fy + 1}-03-31`;
       const fyName = `FY${fy + 1}`;
-      
       const url = `https://quickbooks.api.intuit.com/v3/company/${REALM_ID}/reports/ProfitAndLossDetail?start_date=${startDate}&end_date=${endDate}&minorversion=65`;
-      
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
         }
       });
-      
       const apiData = await response.json();
-      
       function extractRows(rows) {
         const result = [];
         for (const row of rows) {
@@ -89,15 +106,12 @@ app.get('/data', async (req, res) => {
         }
         return result;
       }
-      
       if (apiData.Rows && apiData.Rows.Row) {
         allRows.push(...extractRows(apiData.Rows.Row));
       }
     }
-    
     const filtered = allRows.filter(r => r.Class !== '');
     res.json(filtered);
-    
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
