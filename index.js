@@ -2,36 +2,32 @@ const express = require('express');
 const fetch = require('node-fetch');
 const app = express();
 
-let refreshToken = process.env.QBO_REFRESH_TOKEN;
 const CLIENT_ID = process.env.QBO_CLIENT_ID;
 const CLIENT_SECRET = process.env.QBO_CLIENT_SECRET;
 const REALM_ID = process.env.QBO_REALM_ID;
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-async function updateRenderToken(newToken) {
+async function getRefreshToken() {
   try {
-    await fetch(`https://api.render.com/v1/services/${process.env.RENDER_SERVICE_ID}/env-vars`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${process.env.RENDER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify([
-        { key: 'QBO_CLIENT_ID', value: CLIENT_ID },
-        { key: 'QBO_CLIENT_SECRET', value: CLIENT_SECRET },
-        { key: 'QBO_REFRESH_TOKEN', value: newToken },
-        { key: 'QBO_REALM_ID', value: REALM_ID },
-        { key: 'RENDER_API_KEY', value: process.env.RENDER_API_KEY },
-        { key: 'RENDER_SERVICE_ID', value: process.env.RENDER_SERVICE_ID }
-      ])
+    const res = await fetch(`${UPSTASH_URL}/get/qbo_refresh_token`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` }
     });
-    refreshToken = newToken;
-    console.log('Refresh token mis à jour:', newToken);
-  } catch (err) {
-    console.error('Erreur mise à jour Render:', err);
-  }
+    const data = await res.json();
+    if (data.result) return data.result;
+  } catch (e) {}
+  return process.env.QBO_REFRESH_TOKEN;
+}
+
+async function saveRefreshToken(token) {
+  await fetch(`${UPSTASH_URL}/set/qbo_refresh_token/${encodeURIComponent(token)}`, {
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` }
+  });
+  console.log('Refresh token sauvegardé dans Upstash:', token);
 }
 
 async function getAccessToken() {
+  const refreshToken = await getRefreshToken();
   const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
   const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
     method: 'POST',
@@ -47,7 +43,7 @@ async function getAccessToken() {
   });
   const data = await response.json();
   if (data.access_token) {
-    await updateRenderToken(data.refresh_token);
+    await saveRefreshToken(data.refresh_token);
     return data.access_token;
   }
   throw new Error(JSON.stringify(data));
@@ -76,10 +72,7 @@ app.get('/data', async (req, res) => {
       const fyName = `FY${fy + 1}`;
       const url = `https://quickbooks.api.intuit.com/v3/company/${REALM_ID}/reports/ProfitAndLossDetail?start_date=${startDate}&end_date=${endDate}&minorversion=65`;
       const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Accept': 'application/json'
-        }
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
       });
       const apiData = await response.json();
       function extractRows(rows) {
@@ -88,30 +81,16 @@ app.get('/data', async (req, res) => {
           if (row.type === 'Data') {
             const cols = row.ColData || [];
             const getValue = (i) => (cols[i] && cols[i].value) ? cols[i].value.trim() : '';
-            result.push({
-              Date: getValue(0),
-              TransactionType: getValue(1),
-              Num: getValue(2),
-              Name: getValue(3),
-              Class: getValue(4),
-              Memo: getValue(5),
-              Split: getValue(6),
-              Amount: parseFloat(getValue(7)) || 0,
-              Balance: parseFloat(getValue(8)) || 0,
-              AnneeFiscale: fyName
-            });
+            result.push({ Date: getValue(0), TransactionType: getValue(1), Num: getValue(2), Name: getValue(3), Class: getValue(4), Memo: getValue(5), Split: getValue(6), Amount: parseFloat(getValue(7)) || 0, Balance: parseFloat(getValue(8)) || 0, AnneeFiscale: fyName });
           } else if (row.type === 'Section' && row.Rows && row.Rows.Row) {
             result.push(...extractRows(row.Rows.Row));
           }
         }
         return result;
       }
-      if (apiData.Rows && apiData.Rows.Row) {
-        allRows.push(...extractRows(apiData.Rows.Row));
-      }
+      if (apiData.Rows && apiData.Rows.Row) allRows.push(...extractRows(apiData.Rows.Row));
     }
-    const filtered = allRows.filter(r => r.Class !== '');
-    res.json(filtered);
+    res.json(allRows.filter(r => r.Class !== ''));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
